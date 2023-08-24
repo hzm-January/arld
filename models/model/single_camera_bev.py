@@ -2,12 +2,10 @@ import numpy as np
 import torch
 import torchvision as tv
 from torch import nn
-from utils.homograph_util import homograph
 import torch.nn.functional as F
-import kornia.geometry.transform as kgt
-import kornia.geometry.conversions as kgc
-
-
+from models.model.ar_transformer import AutoregressiveTransformer
+from models.model.box_decoder import BoxDecoder
+from models.model.shape_decoder import ShapeDecoder
 def naive_init_module(mod):
     for m in mod.modules():
         if isinstance(m, nn.Conv2d):
@@ -296,122 +294,6 @@ class Residual(nn.Module):
 
         out += identity
         return self.relu(out)
-
-
-class HG_MLP(nn.Module):
-    def __init__(self):
-        super(HG_MLP, self).__init__()
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(3, 6, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(6),
-            nn.ReLU(),
-            nn.Conv2d(6, 12, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(12),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2)
-        )
-        self.layer2 = nn.Sequential(
-            nn.Conv2d(12, 24, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(24),
-            nn.ReLU(),
-            nn.Conv2d(24, 48, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(48),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2)
-        )
-        self.layer3 = nn.Sequential(
-            nn.Conv2d(48, 96, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(96),
-            nn.ReLU(),
-            nn.Conv2d(96, 192, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(192),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2)
-        )
-        self.layer4 = nn.Sequential(
-            nn.Conv2d(192, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2)
-        )
-        self.layer5 = nn.Sequential(
-            nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 96, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(96),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2)
-        )
-        self.layer6 = nn.Sequential(
-            nn.Conv2d(96, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 32, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ReLU()
-        )
-        self.fc = nn.Sequential(
-            nn.Dropout(0.5),
-            nn.Linear(32 * 18 * 32, 1024),
-            nn.BatchNorm1d(1024),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(1024, 2),
-            # nn.Tanh()
-        )
-        hg_mlp_init_module(self.layer1)
-        hg_mlp_init_module(self.layer2)
-        hg_mlp_init_module(self.layer3)
-        hg_mlp_init_module(self.layer4)
-        hg_mlp_init_module(self.layer5)
-        hg_mlp_init_module(self.layer6)
-
-    def forward(self, images, configs):
-        out = self.layer1(images)  # x img(8,3,576,1024) -> out (8,12,288,512)
-        out = self.layer2(out)  # out (8,12,288,512) -> out (8,48,144,256)
-        out = self.layer3(out)  # out (8,48,144,256) -> out (8,192,72,128)
-        out = self.layer4(out)  # out (8,192,72,128) -> out (8,128,36,64)
-        out = self.layer5(out)  # out (8,128,36,64) -> out (8,96,18,32)
-        out = self.layer6(out)  # out (8,96,18,32) -> out (8,32,18,32)
-        out = out.contiguous().view(images.size(0), -1)
-        out = self.fc(out)  # out(8,8)
-        # img_warped, imgs_gt_inst, imgs_gt_seg, hg_mtxs = self.hg_transform(images, images_gt, out, configs)
-        # [1.00068778e+00, 2.23062386e-20, 6.60278320e-01, 3.67842412e-16, 1.00068795e+00, 4.26676470e+01,
-        #  4.27762242e-19, 0.00000000e+00]
-        tmp = torch.zeros((images.shape[0], 9), requires_grad=True).cuda()
-        H_indices = torch.tensor([[2, 5]]).expand(images.shape[0], 2).cuda()
-        tmp.scatter_(dim=1, index=H_indices, src=out)
-        trans_matrix_gt = torch.tensor([[1.0, 0.0, 1.0, 0.0, 1.0, 10.0, 0.0, 0.0, 1.0]], requires_grad=True).cuda()
-        # out = torch.zeros((8, 8),dtype=torch.float32).cuda()
-        h_matrix = tmp + trans_matrix_gt
-        img_warped, hg_mtxs = self.hg_transform(images, h_matrix, configs)
-        return img_warped, hg_mtxs
-
-    def hg_transform(self, images, hg_mtxs, configs):
-        # hg_mtx (8,8) -> (8,3,3)
-        # hg_mtxs = torch.cat((hg_mtxs, torch.ones(hg_mtxs.shape[0], 1).cuda()), dim=1)
-        hg_mtxs = hg_mtxs.view((hg_mtxs.shape[0], 3, 3))  # hg_mtxs(16,3,3)
-
-        # images(16,3,576,1024) img_s32 (16,512,18,32) images_gt (16,1280,1920) hg_mtxs(16,9)
-        batch_size = images.shape[0]
-        output_2d_h, output_2d_w = configs.output_2d_shape[0], configs.output_2d_shape[1]
-        # input_shape 数据增强的resize尺寸，也是源代码中进入backbone的尺寸。
-        # 处理完homograph之后，图像变换到该尺寸作为后序backbone的输入
-        img_s32_h, img_s32_w, img_s32_c = configs.input_shape[0], configs.input_shape[1], images.shape[1]
-        img_vt_s32_hg_shape = (img_s32_h, img_s32_w)  # (1024,576)
-
-        images.requires_grad_()
-
-        # hg_mtxs_image = kgc.denormalize_homography(hg_mtxs, (img_s32_h, img_s32_w), (img_s32_h, img_s32_w))
-        images_warped = kgt.warp_perspective(images, hg_mtxs, img_vt_s32_hg_shape)
-
-        return images_warped.float(), hg_mtxs.float()
-
-
 # model
 # ResNet34 骨干网络 (self.bb)，在 ImageNet 上进行预训练。
 # 一个下采样层 (self.down)，用于减小特征图的空间维度。
@@ -419,8 +301,10 @@ class HG_MLP(nn.Module):
 # 车道线检测头 (self.lane_head)，以 BEV 表示作为输入，输出表示检测到的车道线的张量。
 # 可选的 2D 图像车道线检测头 (self.lane_head_2d)，以 ResNet 骨干网络的输出作为输入，输出表示原始图像中检测到的车道线的张量。
 class BEV_LaneDet(nn.Module):  # BEV-LaneDet
-    def __init__(self, bev_shape, output_2d_shape, train=True):
+    def __init__(self, cfg, train=True):
         super(BEV_LaneDet, self).__init__()
+        self.bev_shape = cfg.bev_shape
+        self.output_2d_shape = cfg.output_2d_shape,
         self.head = InstanceEmbedding(32, 2)
         naive_init_module(self.head)
         ''' backbone '''
@@ -438,33 +322,26 @@ class BEV_LaneDet(nn.Module):  # BEV-LaneDet
                 downsample=nn.Conv2d(512, 1024, kernel_size=3, stride=2, padding=1),
             )
         )
-        self.hg = HG_MLP()  # hg_mtx_feat (32,32,18,32) hg_mtx(32,9)
-        self.hg_util = homograph
         self.s32transformer = FCTransform_((512, 18, 32), (256, 25, 5))
         self.s64transformer = FCTransform_((1024, 9, 16), (256, 25, 5))
-        self.lane_head = LaneHeadResidual_Instance_with_offset_z(bev_shape, input_channel=512)
+        self.transformer = AutoregressiveTransformer(cfg)
+        # self.box_gen = BoxDecoder(cfg)
+        # self.shape_gen = ShapeDecoder(cfg)
+        self.lane_head = LaneHeadResidual_Instance_with_offset_z(self.bev_shape, input_channel=512)
         self.is_train = train
         if self.is_train:
-            self.lane_head_2d = LaneHeadResidual_Instance(output_2d_shape, input_channel=512)
+            self.lane_head_2d = LaneHeadResidual_Instance(self.output_2d_shape, input_channel=512)
 
-    def forward(self, img, configs=None):  # img (32,3,576,1024)  img_gt (32,1080,1920)
-
-        img_vt, hg_mtxs = self.hg(img, configs)  # img(8,1080,1920,3) hg_mtx(8,8)
-
-        # hg_mtxs = self.hg(img)  # img(8,1080,1920,3) hg_mtx(8,8)
-        # # hg_mtx (8,8) -> (8,3,3)
-        # hg_mtxs = F.normalize(hg_mtxs, dim=1, p=2, eps=1e-6)  # H^-1
-        # hg_mtxs = torch.cat((hg_mtxs, torch.ones(hg_mtxs.shape[0], 1).cuda()), dim=1)
-        # hg_mtxs = hg_mtxs.view((hg_mtxs.shape[0], 3, 3))  # hg_mtxs(16,3,3)
-        #
-        # img_vt, imgs_gt_inst, imgs_gt_seg = self.hg_util(img, img_gt, hg_mtxs, configs)
-
-        img_vt_s32 = self.bb(img_vt)  # img_vt (32,3,576,1024) img_vt_s32 (32,512,18,32)
+    def forward(self, img):  # img (32,3,576,1024)  img_gt (32,1080,1920)
+        img_vt_s32 = self.bb(img)  # img_vt (32,3,576,1024) img_vt_s32 (32,512,18,32)
         img_vt_s64 = self.down(img_vt_s32)  # img_vt_s32 (32,512,18,32) img_s64 (32,1024,9,16)
         bev_32 = self.s32transformer(img_vt_s32)  # img_vt_s32(32,512,18,32) bev_32 (32,256,25,5)
         bev_64 = self.s64transformer(img_vt_s64)  # img_s64 (32,1024,9,16) bev_64 (32,256,25,5)
         bev = torch.cat([bev_64, bev_32], dim=1)  # bev (8,512,25,5)
+        seq_feat, completeness_score = self.transformer(bev)
+        # box3ds = self.box_gen(seq_feat, completeness_score)
+        # shape = self.shape_gen(seq_feat)
         if self.is_train:
-            return img_vt, hg_mtxs, self.lane_head(bev), self.lane_head_2d(img_vt_s32)
+            return self.lane_head(bev), self.lane_head_2d(img_vt_s32)
         else:
-            return img_vt, hg_mtxs, self.lane_head(bev)
+            return self.lane_head(bev)

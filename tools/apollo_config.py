@@ -6,11 +6,12 @@ import numpy as np
 from loader.bev_road.apollo_data import Apollo_dataset_with_offset, Apollo_dataset_with_offset_val
 from models.model.single_camera_bev import BEV_LaneDet
 
-def get_camera_matrix(cam_pitch,cam_height):
-    proj_g2c = np.array([[1,                             0,                              0,          0],
-                        [0, np.cos(np.pi / 2 + cam_pitch), -np.sin(np.pi / 2 + cam_pitch), cam_height],
-                        [0, np.sin(np.pi / 2 + cam_pitch),  np.cos(np.pi / 2 + cam_pitch),          0],
-                        [0,                             0,                              0,          1]])
+
+def get_camera_matrix(cam_pitch, cam_height):
+    proj_g2c = np.array([[1, 0, 0, 0],
+                         [0, np.cos(np.pi / 2 + cam_pitch), -np.sin(np.pi / 2 + cam_pitch), cam_height],
+                         [0, np.sin(np.pi / 2 + cam_pitch), np.cos(np.pi / 2 + cam_pitch), 0],
+                         [0, 0, 0, 1]])
 
     camera_K = np.array([[2015., 0., 960.],
                          [0., 2015., 540.],
@@ -27,7 +28,7 @@ data_base_path = '/home/houzm/datasets/apollo-3d-lane-synthetic/Apollo_Sim_3D_La
 
 model_save_path = "/home/houzm/houzm/03_model/bev_lane_det-cnn/apollo/train/0810_standard/"
 
-input_shape = (576, 1024) # height width
+input_shape = (576, 1024)  # height width
 output_2d_shape = (144, 256)
 
 ''' BEV range '''
@@ -41,6 +42,20 @@ loader_args = dict(
     num_workers=12,
     shuffle=True
 )
+
+''' transformer '''
+# tf_config = dict(
+#     z_dim=512,
+#     latent_len=1024,
+#     max_n_lane=10,  # 53
+#     n_head=4
+# )
+tf_config = {
+    'z_dim': 512,
+    'latent_len': 1024,
+    'max_n_lane': 10,
+    'n_head': 4
+}
 
 ''' virtual camera config '''
 camera_ext_virtual, camera_K_virtual = get_camera_matrix(0.04325083977888603, 1.7860000133514404)  # a random parameter
@@ -56,6 +71,8 @@ vc_config['vc_image_shape'] = (1920, 1080)
 load_optimizer = True
 
 resume_scheduler = True
+
+
 # resume_scheduler = False
 def model():
     return BEV_LaneDet(bev_shape=bev_shape, output_2d_shape=output_2d_shape, train=True)

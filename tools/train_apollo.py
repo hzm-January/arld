@@ -1,6 +1,5 @@
 import sys
 
-import kornia.geometry.conversions as kgc
 
 sys.path.append('/home/houzm/houzm/02_code/bev_lane_det-cnn')  # 添加模块搜索路径
 import torch
@@ -14,10 +13,11 @@ from utils.config_util import load_config_module  # 导入加载配置文件的�
 from sklearn.metrics import f1_score  # 导入F1分数计算函数
 import numpy as np
 import os
-import kornia.geometry.transform as kgt
 import torch.nn.functional as F
+from models.model.single_camera_bev import BEV_LaneDet
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6,7"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 
 
 # 定义一个继承自nn.Module的类，将模型和损失函数组合在一起
@@ -40,7 +40,7 @@ class Combine_Model_and_Loss(torch.nn.Module):
                 image_gt_segment=None,
                 image_gt_instance=None, trans_matrix=None, train=True):
         # images_gt current camera 图像像素坐标系，尺寸与image相同，图片中只有车道线的信息，不同车道线不同颜色，
-        res = self.model(inputs, configs)  # 调用模型进行预测
+        res = self.model(inputs)  # 调用模型进行预测
         # image_gt_instance_h = res[0]
         # image_gt_segment_h = res[1]
         images_vt = res[0]
@@ -62,27 +62,14 @@ class Combine_Model_and_Loss(torch.nn.Module):
             # image_gt_segment_h(8,1,144,256) 与image_gt_instance唯一的不同是没有不同车道线的标注，只有0 1值，标注像素点是否是车道线。
             # pred_2d (8,1,144,256) float32
             # emb_2d (8,2,144,256)
-            trans_matrix_inverse = torch.inverse(trans_matrix)
-            pred_2d_inverse = kgt.warp_perspective(pred_2d, trans_matrix_inverse, configs.output_2d_shape)
-            emb_2d_inverse = kgt.warp_perspective(emb_2d, trans_matrix_inverse, configs.output_2d_shape)
-
-            loss_seg_2d = self.bce(pred_2d_inverse, image_gt_segment) + self.iou_loss(torch.sigmoid(pred_2d_inverse),
+            loss_seg_2d = self.bce(pred_2d, image_gt_segment) + self.iou_loss(torch.sigmoid(pred_2d),
                                                                               image_gt_segment)  # 计算2D分割损失和IoU损失
-            loss_emb_2d = self.poopoo(emb_2d_inverse, image_gt_instance)  # 计算2D嵌入向量损失
+            loss_emb_2d = self.poopoo(emb_2d, image_gt_instance)  # 计算2D嵌入向量损失
             loss_total_2d = 3 * loss_seg_2d + 0.5 * loss_emb_2d  # 计算2D总损失
             loss_total_2d = loss_total_2d.unsqueeze(0)  # 将2D总损失转换成一维张量
-            # 计算H损失
 
-            images_vt_inverse = kgt.warp_perspective(images_vt, trans_matrix_inverse, configs.output_2d_shape)
-
-            # loss_h_p = 30 * self.photometric_loss(images_vt_inverse, inputs) # RGB图像损失
-            # loss_h_p = loss_h_p.unsqueeze(0)
-            loss_h_x = 2 * self.sl1_loss(homograph_matrix, trans_matrix)
-            loss_h_x = loss_h_x.unsqueeze(0)
-            loss_h = loss_h_x
-            loss_h = loss_h.unsqueeze(0)
             # 返回预测结果和损失
-            return pred, loss_total, loss_total_2d, loss_offset, loss_z, homograph_matrix, loss_seg_2d, loss_emb_2d, loss_h, loss_h_x
+            return pred, loss_total, loss_total_2d, loss_offset, loss_z, homograph_matrix, loss_seg_2d, loss_emb_2d
         else:
             return pred  # 返回预测结果
 
@@ -106,7 +93,7 @@ def train_epoch(model, dataset, optimizer, scheduler, configs, epoch):
         # image_gt_segment = image_gt_segment.cuda() # 将2D分割标签转移到GPU上
         # image_gt_instance = image_gt_instance.cuda() # 将2D嵌入向量标签转移到GPU上
         prediction, loss_total_bev, loss_total_2d, loss_offset, loss_z, hg_matrix, \
-            loss_seg_2d, loss_emb_2d, loss_h, loss_h_x = model(
+            loss_seg_2d, loss_emb_2d = model(
             input_data,
             image_gt,
             configs,
@@ -122,10 +109,7 @@ def train_epoch(model, dataset, optimizer, scheduler, configs, epoch):
         loss_z = loss_z.mean()  # 计算高度损失的平均值
         loss_seg_2d = loss_seg_2d.mean()  # 打印用
         loss_emb_2d = loss_emb_2d.mean()  # 打印用
-        loss_h = loss_h.mean()
-        # loss_h_p = loss_h_p.mean()  # 打印用
-        loss_h_x = loss_h_x.mean()  # 打印用
-        loss_back_total = loss_back_bev + 0.5 * loss_back_2d + loss_offset + loss_z + loss_h  # 计算总损失
+        loss_back_total = loss_back_bev + 0.5 * loss_back_2d + loss_offset + loss_z # 计算总损失
 
         ''' caclute loss '''
         optimizer.zero_grad()  # 清空梯度
@@ -146,12 +130,11 @@ def train_epoch(model, dataset, optimizer, scheduler, configs, epoch):
             # loss_back_total = 3d loss + 0.5 * 2d loss + loss_offset + loss_z + loss_hg
             print(
                 '| %3d | Hlr: %.10f | Blr: %.10f | 3d+2d+h: %f | F1: %f |'
-                ' 3d: %f | Offset: %f | Z: %f | 2d: %f | s: %f | e: %f | h: %f | hx: %f |' % (
+                ' 3d: %f | Offset: %f | Z: %f | 2d: %f | s: %f | e: %f |' % (
                     idx, scheduler.optimizer.param_groups[0]['lr'], scheduler.optimizer.param_groups[1]['lr'],
                     loss_back_total.item(),
                     f1_bev_seg, loss_back_bev.item(), loss_offset.item(), loss_z.item(),
-                    loss_back_2d.item(), loss_seg_2d.item(), loss_emb_2d.item(),
-                    loss_h.item(), loss_h_x.item()))
+                    loss_back_2d.item(), loss_seg_2d.item(), loss_emb_2d.item()))
             # print('-' * 80)
 
         if idx != 0 and idx % 50 == 0 and len(dataset) - idx < 50:  # idx % 700 == 0
@@ -166,12 +149,13 @@ def worker_function(config_file, gpu_id, checkpoint_path=None):
     configs = load_config_module(config_file)  # 加载配置文件
 
     ''' models and optimizer '''
-    model = configs.model()  # 加载模型
+    # model = configs.model()  # 加载模型
+    model = BEV_LaneDet(cfg=configs, train=True)  # 加载模型
     model = Combine_Model_and_Loss(model)  # 将模型和损失函数组合在一起
     if torch.cuda.is_available():
         model = model.cuda()  # 将模型转移到GPU上
 
-    params_hg_ids = list(map(id, model.model.hg.parameters()))
+    params_hg_ids = list(map(id, model.model.transformer.parameters()))
     params_hg = filter(lambda m: (id(m) in params_hg_ids) and m.requires_grad, model.parameters())
     params_not_hg = filter(lambda m: (id(m) not in params_hg_ids) and m.requires_grad, model.parameters())
     # optimizer = configs.optimizer(params=[
@@ -237,7 +221,7 @@ if __name__ == '__main__':
 
     warnings.filterwarnings("ignore")
     # worker_function('/home/houzm/houzm/02_code/bev_lane_det-cnn/tools/apollo_config.py', gpu_id=[4,5])  # 调用worker_function函数，传入配置文件路径和GPU编号
-    worker_function('/home/houzm/houzm/02_code/bev_lane_det-cnn/tools/apollo_config.py',
+    worker_function('/home/houzm/houzm/02_code/arld/tools/apollo_config.py',
                     # gpu_id=[2, 3],
                     # gpu_id=[5, 6],
                     gpu_id=[4, 5, 6, 7],
