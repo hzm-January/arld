@@ -37,7 +37,7 @@ plt.rcParams['figure.figsize'] = (35, 30)
 
 
 def define_args():
-    parser = argparse.ArgumentParser(description='PersFormer_3DLane_Detection')
+    parser = argparse.ArgumentParser(description='ARLD_Detection')
     # Paths settings
     parser.add_argument('--dataset_name', type=str, help='the dataset name')
     parser.add_argument('--data_dir', type=str, help='The path of dataset json files (annotations)')
@@ -54,8 +54,8 @@ def define_args():
     parser.add_argument('--no_3d', action='store_true', help='if a dataset include laneline 3D attributes')
     parser.add_argument('--no_centerline', action='store_true', help='if a dataset include centerline')
     parser.add_argument('--num_category', type=int, default=2, help='number of lane category, including background')
-    # PersFormer settings
-    parser.add_argument('--mod', type=str, default='PersFormer', help='model to train')
+    # ARLD settings
+    parser.add_argument('--mod', type=str, default='ARLD', help='model to train')
     parser.add_argument("--pretrained", type=str2bool, nargs='?', const=True, default=True, help="use pretrained model to start training")
     parser.add_argument("--batch_norm", type=str2bool, nargs='?', const=True, default=True, help="apply batch norm")
     parser.add_argument("--pred_cam", type=str2bool, nargs='?', const=True, default=False, help="use network to predict camera online?")
